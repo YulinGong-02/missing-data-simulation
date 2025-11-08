@@ -1,0 +1,484 @@
+---
+title: "MCAR and MAR_5000_simulation"
+author: "Yulin Gong"
+format:
+  html:
+    theme: cosmo
+    embed-resources: true
+    number-sections: false
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    code-fold: false
+execute:
+  eval: true
+---
+
+# Data setup simulation
+```{r}
+
+
+#Load libraries
+library(tidyverse)
+library(gtsummary)
+
+library(miceRanger)
+
+library(doParallel)
+# Set up back ends.
+cl <- makeCluster(4)
+registerDoParallel(cl)
+
+library(furrr)
+library(future)
+plan(multisession, workers = 4) 
+#Set seed
+set.seed(123)
+
+#Helper functions
+expit <- function(linearcombination){
+  n = (1/(1 + exp(-(linearcombination))))
+  return (n)
+}
+
+#identical(plogis(2), expit(2))
+
+logit <- function(pr){
+  n = log(pr/(1-pr))
+  return(n)
+}
+
+#Data simulation from dag
+
+sim_function <- function(.n = 10000, #.seed = 123, 
+                         .prop_missing_c = .5, 
+                         .prop_missing_y = .5,
+                         .mcar = T,
+                         .data_name = "test",
+                         .data_id = 1
+){
+  #Set seed
+  #set.seed(.seed)
+  
+  #Sample size
+  n = .n
+  
+  id = 1:n
+  
+  data0 <- tibble(
+    #Dataset metadata
+    data_name = .data_name,
+    data_id = .data_id,
+    sample_size = n,
+    mcar = ifelse(.mcar, "MCAR", "MAR/MNAR"),
+    prop_missing_c = .prop_missing_c,
+    prop_missing_y = .prop_missing_y,
+    
+    #ID variable
+    id = 1:n,
+    
+    #Variables with no parents: L, Z
+    ##[L] is a binary variable (xxx), reference probability of .35, no parent vars. 
+    l = rbinom(n = n, size = 1, prob = expit(logit(.35))),
+    ##[Z] is a binary variable (xxx), reference probability of .15, no parent vars.
+    z = rbinom(n = n, size = 1, prob = expit(logit(.15))),
+    
+    #Variables with parents: C, C*, Rc, X, Y, LTFU
+    ##C and related missingness
+    ##[C] is binary variable (xxx), reference probability of .45, RR: L-1.3.
+    c = rbinom(n = n, size = 1, prob = expit(logit(.45) + log(1.3)*l)),
+    ##[R_c] is binary variable (xxx), variable reference probability, RR: L-4.2.
+    p0_c = expit(logit(.prop_missing_c) - log(4.2)*mean(l)),
+    r_c = if(.mcar){
+      rbinom(n = n, size = 1, prob = expit(logit(.prop_missing_c)))
+    } else {
+      rbinom(n = n, size = 1, prob = expit(logit(p0_c) + log(4.2)*l))
+    },
+    ##[C*] is binary variable (xxx), if R_c=0, then C* = C, if R_c=1, then C* = NA
+    c_star = ifelse(r_c == 0, c, NA),
+    
+    #Exposure
+    ##e[X]posure is binary variable (xxx), reference probability of .55, RR: C-1.25
+    x = rbinom(n = n, size = 1, 
+               prob = expit(logit(.55) + log(1.25)*c)),
+    
+    #Outcome and related missingness (LTFU)
+    ##outcome [Y] is binary variable (xxx), reference probability of .1, RRs:  X-3.9, C-5.7, Z-2.6
+    y = rbinom(n = n, size = 1, 
+               prob = expit(logit(.1) + log(3.9)*x + log(5.7)*c + log(2.6)*z)),
+    ##Binary LTFU, variable reference probability, RRs: X-2.3, Z-2.8
+    p0_ltfu = expit(logit(.prop_missing_y) - log(2.3)*mean(x) - log(2.8)*mean(z)),
+    ltfu = if(.mcar) {
+      rbinom(n = n, size = 1, prob = expit(logit(.prop_missing_y)))
+    } else {
+      rbinom(n = n, size = 1, 
+             prob = expit(
+               logit(p0_ltfu) + log(2.3)*x + log(2.8)*z)) 
+    },
+    ##S0 is the selection variable, 1 if not lost to follow up, 0 if lost to follow up
+    s0 = 1 - ltfu,
+    ##y_star is the outcome variable, if s0=1, then y_star = Y, if s0=0, then y_star = NA
+    y_star = ifelse(s0 == 1, y, NA)
+  )
+  
+  return(data0)
+}
+```
+
+# 500 simulation
+```{r}
+#Simulate datasets with 4 sample sizes(300, 600, 1200,5000) and 3 missingness rates (.1, .25, .5) 
+mcar <- c(TRUE, FALSE) # TRUE for MCAR, FALSE for MAR
+sample_sizes <- c(300, 600, 1200, 5000)
+missing_rates <- c(0.1, 0.25, 0.5)
+num_datasets <- 500
+dataset_combinations <- expand.grid(
+  sample_size = sample_sizes,
+  missing_rate = missing_rates,
+  mcar = mcar,
+  dataset_id = 1:num_datasets
+) %>%
+  mutate(
+  dataset_name = paste0("dataset_", "n", sample_size, "_mr", missing_rate, "_mcar", mcar, 
+                        "_id", dataset_id)
+)
+
+
+
+#generate datasets using pmap
+data_list <- pmap(.l = 
+       list(..1 = dataset_combinations$sample_size, 
+            ..2 = 123, 
+            ..3 = dataset_combinations$missing_rate, 
+            ..4 = dataset_combinations$mcar,
+            ..5 = dataset_combinations$dataset_name,
+            ..6 = dataset_combinations$dataset_id),
+     ~ sim_function(.n = ..1, #.seed = ..2, 
+                   .prop_missing_c = ..3, 
+                   .prop_missing_y = ..3, 
+                   .mcar = ..4, 
+                   .data_name = ..5,
+                   .data_id = ..6))
+
+combined_data <- bind_rows(data_list) 
+
+glimpse(combined_data)
+```
+
+
+
+```{r}
+
+combined_data1 <- combined_data %>%
+  #convert integer to numeric in order to fit the imputation regression
+  mutate(across(where(is.integer), as.double)) %>%
+  # set MAR and MCAR
+  mutate(mcar = ifelse(mcar == "MAR/MNAR", "MAR", mcar))
+glimpse(combined_data1)
+```
+
+
+```{r}
+# check data name
+unique(combined_data1$mcar)
+
+```
+
+```{r}
+library(Hmisc)    # for aregImpute()
+library(logistf)  # for Firth logistic regression
+
+evaluate_model <- function(data_original, method = "mice", m = 10, true_effect = 3.9) {
+  # Extract the unique dataset ID (used for later aggregation)
+  this_id <- unique(data_original$data_id)
+  if (length(this_id) != 1) this_id <- NA_integer_
+
+  # Prepare model-ready data: rename c_star → c, y_star → y
+  data <- data_original %>%
+    dplyr::select(y = y_star, c = c_star, x, z, l) %>%
+    mutate(across(everything(), ~ as.numeric(as.character(.))))
+
+  # Default empty result (returned if fitting fails)
+  result_empty <- tibble(
+    data_id = this_id,
+    method  = method,
+    estimate = NA_real_,   # Odds Ratio (OR)
+    lci      = NA_real_,   # Lower 95% CI bound
+    uci      = NA_real_    # Upper 95% CI bound
+  )
+
+  # ===============================================================
+  # 1. COMPLETE-CASE ANALYSIS 
+  # ===============================================================
+  if (method == "complete") {
+    data_cc <- data %>%
+      filter(!if_any(all_of(c("y", "x", "c")), is.na)) %>%
+      mutate(y = factor(y, levels = c(0, 1)))
+
+    # Firth logistic regression provides bias-reduced estimates
+    # and handles quasi-complete separation in small samples.
+    if (nrow(data_cc) > 0 && length(unique(data_cc$y)) == 2) {
+      fit <- try(logistf(y ~ x + c + z + l, data = data_cc), silent = TRUE)
+      if (!inherits(fit, "try-error") && "x" %in% names(coef(fit))) {
+        beta <- coef(fit)["x"]
+        se   <- sqrt(vcov(fit)["x", "x"])
+        return(tibble(
+          data_id  = this_id,
+          method   = method,
+          estimate = exp(beta),
+          lci      = exp(beta - 1.96 * se),
+          uci      = exp(beta + 1.96 * se)
+        ))
+      }
+    }
+    return(result_empty)
+  }
+
+  # ===============================================================
+  # 2. MICE MULTIPLE IMPUTATION 
+  # ===============================================================
+  if (method == "mice") {
+    data_mice <- data %>% mutate(y = factor(y, levels = c(0, 1)))
+    imp_method <- mice::make.method(data_mice)
+    imp <- try(mice::mice(data_mice, m = m, method = imp_method, maxit = 5,
+                          seed = sample(1:500, 1), print = FALSE), silent = TRUE)
+    if (inherits(imp, "try-error")) return(result_empty)
+
+    # Standard logistic regression is used here for compatibility with mice::pool()
+    fit <- try(with(imp, glm(y ~ x + c + z + l, family = binomial())), silent = TRUE)
+    if (inherits(fit, "try-error")) return(result_empty)
+
+    pooled <- pool(fit)
+    est <- summary(pooled) %>% dplyr::filter(term == "x")
+    if (nrow(est) == 0) return(result_empty)
+
+    beta <- est$estimate
+    se   <- est$std.error
+    return(tibble(
+      data_id  = this_id,
+      method   = method,
+      estimate = exp(beta),
+      lci      = exp(beta - 1.96 * se),
+      uci      = exp(beta + 1.96 * se)
+    ))
+  }
+
+  # ===============================================================
+  # 3. AREGIMPUTE 
+  # ===============================================================
+  if (method == "aregImpute") {
+    ai <- try(Hmisc::aregImpute(~ y + x + c + z + l, data = data,
+                                n.impute = m, nk = 3, B = 10,
+                                match = "closest", pr = FALSE),
+              silent = TRUE)
+    if (inherits(ai, "try-error")) return(result_empty)
+
+    est_list <- lapply(1:m, function(i) {
+      imp_list <- try(impute.transcan(ai, imputation = i, data = data,
+                                      list.out = TRUE, pr = FALSE, check = FALSE),
+                      silent = TRUE)
+      if (inherits(imp_list, "try-error")) return(NULL)
+      df <- data
+      for (nm in names(imp_list)) df[[nm]] <- imp_list[[nm]]
+      df$y <- factor(df$y, levels = c(0, 1))
+      if (length(unique(df$y)) < 2) return(NULL)
+
+      # Standard glm() is used for compatibility and consistent variance estimation
+      fit <- try(glm(y ~ x + c + z + l, data = df, family = binomial()), silent = TRUE)
+      if (inherits(fit, "try-error")) return(NULL)
+      sm <- coef(summary(fit))
+      if (!("x" %in% rownames(sm))) return(NULL)
+      tibble(beta = sm["x", "Estimate"], se = sm["x", "Std. Error"])
+    })
+    imp_tbl <- bind_rows(est_list)
+    if (nrow(imp_tbl) == 0) return(result_empty)
+
+    # Rubin pooling (manual implementation)
+    q_bar <- mean(imp_tbl$beta)
+    u_bar <- mean(imp_tbl$se^2)
+    b_m   <- if (nrow(imp_tbl) > 1) var(imp_tbl$beta) else 0
+    t_var <- u_bar + (1 + 1/m) * b_m
+    se    <- sqrt(t_var)
+
+    return(tibble(
+      data_id  = this_id,
+      method   = method,
+      estimate = exp(q_bar),
+      lci      = exp(q_bar - 1.96 * se),
+      uci      = exp(q_bar + 1.96 * se)
+    ))
+  }
+
+  # ===============================================================
+  # 4. MISSRANGER (Random Forest Single Imputation)
+  # ===============================================================
+  if (method == "missRanger") {
+    imp_data <- data %>% mutate(across(everything(), ~ factor(as.numeric(.), levels = c(0, 1))))
+    suppressWarnings({
+      imputed <- try(missRanger::missRanger(
+        imp_data, pmm.k = 0, seed = sample(1:500, 1),
+        maxiter = 5, num.trees = 100, verbose = 0), silent = TRUE)
+    })
+    if (inherits(imputed, "try-error")) return(result_empty)
+    imputed <- imputed %>% mutate(across(everything(), ~ as.numeric(as.character(.))))
+    if (length(unique(imputed$y)) < 2) return(result_empty)
+
+    fit <- try(glm(y ~ x + c + z + l, data = imputed, family = binomial()), silent = TRUE)
+    if (inherits(fit, "try-error")) return(result_empty)
+    sm <- coef(summary(fit))
+    if (!("x" %in% rownames(sm))) return(result_empty)
+
+    beta <- sm["x", "Estimate"]
+    se   <- sm["x", "Std. Error"]
+    return(tibble(
+      data_id  = this_id,
+      method   = method,
+      estimate = exp(beta),
+      lci      = exp(beta - 1.96 * se),
+      uci      = exp(beta + 1.96 * se)
+    ))
+  }
+
+  return(result_empty)
+}
+
+```
+
+
+```{r}
+library(mice)
+library(tidyverse)
+library(furrr)
+set.seed(123)
+plan(multisession, workers = 4)
+
+all_methods <- c("complete", "mice", "aregImpute", "missRanger")
+
+settings_grid <- expand.grid(
+  sim_mechanism    = c("MCAR", "MAR"),
+  sim_n            = c(300, 600, 1200, 5000),
+  sim_missing_rate = c(0.1, 0.25, 0.5),
+  stringsAsFactors = FALSE
+)
+
+# determine number of imputations by method
+get_m <- function(method) {
+  if (method == "mice") return(10)
+  if (method == "aregImpute") return(20)
+  return(1)
+}
+
+N_REPS <- 500  # number of simulated datasets per scenario
+
+run_simulation_summary <- function(setting_row) {
+  mechanism <- setting_row$sim_mechanism
+  n         <- setting_row$sim_n
+  missing   <- setting_row$sim_missing_rate
+
+  message("Processing: ", mechanism, " | n = ", n, " | missing = ", missing)
+
+  # Subset the 500 simulated datasets for the given setting
+  data_subset <- combined_data1 %>%
+    filter(
+      mcar == mechanism,
+      sample_size == n,
+      prop_missing_y == missing,
+      data_id <= N_REPS
+    ) %>%
+    group_by(data_id) %>%
+    group_split()
+
+  true_effect <- 3.9
+
+  method_results <- map_dfr(all_methods, function(method) {
+    m_val <- get_m(method)
+
+    t0 <- Sys.time()
+    # Run evaluate_model() on each simulated dataset
+    per_rep <- future_map_dfr(
+      data_subset,
+      ~ evaluate_model(
+          data_original = .x,
+          method = method,
+          m = m_val,
+          true_effect = true_effect
+        ),
+      .options = furrr_options(seed = TRUE)
+    )
+    t1 <- Sys.time()
+    runtime_minutes <- as.numeric(difftime(t1, t0, units = "mins"))
+
+    # Empirical standard deviation across replicates
+    Emp_SD <- sd(per_rep$estimate, na.rm = TRUE)
+
+    # Aggregate performance metrics at the overall (simulation) level
+    tibble(
+      method        = method,
+      n_reps        = sum(!is.na(per_rep$estimate)),
+      mean_estimate = mean(per_rep$estimate, na.rm = TRUE),
+      sd_estimate   = Emp_SD,
+
+      # Overall metrics (computed at the aggregate level)
+      BIAS = mean_estimate - true_effect,
+      MSE  = mean((per_rep$estimate - true_effect)^2, na.rm = TRUE),
+      RMSE = sqrt(MSE),
+
+      # Coverage based on model-specific CIs
+      coverage1 = mean(per_rep$lci <= true_effect & per_rep$uci >= true_effect, na.rm = TRUE),
+
+      # Coverage2: empirical-SD-based interval 
+      coverage2_emp_sd = mean(
+        (per_rep$estimate - 1.96 * Emp_SD) <= true_effect &
+        (per_rep$estimate + 1.96 * Emp_SD) >= true_effect,
+        na.rm = TRUE
+      ),
+
+      mean_CI_width   = mean(per_rep$uci - per_rep$lci, na.rm = TRUE),
+      runtime_minutes = runtime_minutes
+    )
+  })
+
+  bind_cols(setting_row, method_results)
+}
+
+# Run all simulation settings
+simulation_summary <- purrr::map_dfr(
+  1:nrow(settings_grid),
+  ~ run_simulation_summary(settings_grid[.x, ])
+)
+options(scipen = 999) 
+simulation_summary <- simulation_summary %>%
+mutate(across(where(is.numeric), ~ round(.x, 5)))
+
+print(simulation_summary)
+```
+
+```{r}
+# Round numeric results and print table
+options(scipen = 999)
+simulation_summary <- simulation_summary %>%
+  mutate(across(where(is.numeric), ~ round(.x, 5)))
+
+print(simulation_summary)
+flextable::flextable(simulation_summary)
+
+# save result as CSV file
+write_csv(simulation_summary, "5000_MCAR_MAR.csv")
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,286 @@
+---
+title: "Plot_10.18"
+author: "Yulin Gong"
+format:
+  html:
+    theme: cosmo
+    embed-resources: true
+    number-sections: false
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    code-fold: false
+execute:
+  eval: true
+---
+
+```{r}
+
+# combine all scenatios into one single file
+library(tidyverse)
+
+
+df_mcar_mar <- read_csv("5000_MCAR_MAR.csv")
+df_mnar     <- read_csv("5000_MNAR_large.csv")
+
+
+df_all <- bind_rows(df_mcar_mar, df_mnar)
+
+
+df_all <- df_all %>%
+  mutate(sim_mechanism = factor(sim_mechanism, levels = c("MCAR", "MAR", "MNAR")))
+
+write_csv(df_all, "final_all_data.csv")
+
+
+```
+
+```{r}
+library(tidyverse)
+# sort the file in prefered order
+
+df <- read_csv("final_all_data.csv")
+
+
+df <- df %>%
+  mutate(sim_mechanism = factor(sim_mechanism, levels = c("MCAR", "MAR", "MNAR"))) %>%
+  arrange(sim_n, sim_missing_rate, sim_mechanism)
+
+
+print(df)
+
+
+write_csv(df, "final_large_sorted_results.csv")
+
+```
+
+
+```{r}
+
+# rename columns and round values
+library(dplyr)
+results_table <- df %>% 
+  mutate(
+    sim_mechanism = factor(sim_mechanism, levels = c("MCAR", "MAR", "MNAR")),
+    sim_missing_rate = factor(sim_missing_rate),
+    method = factor(method,
+                    levels = c("complete", "mice", "aregImpute", "missRanger"),
+                    labels = c("Complete Case", "MICE", "aregImpute", "MissRanger"))
+  ) %>% 
+  mutate(across(
+    c(mean_estimate, BIAS, RMSE, coverage1, coverage2_emp_sd, mean_CI_width, runtime_minutes),
+    ~ round(.x, 4)
+  )) %>% 
+  rename(
+    `Sample Size`   = sim_n,
+    Mechanism       = sim_mechanism,
+    `Missing Rate`  = sim_missing_rate,
+    Method          = method,
+    `Mean Estimate` = mean_estimate,
+    Bias            = BIAS,
+    RMSE            = RMSE,
+    Coverage        = coverage1,
+    `Coverage2`     = coverage2_emp_sd,
+    `CI Width`      = mean_CI_width,
+    Time            = runtime_minutes
+  ) %>%
+  select(`Sample Size`, Mechanism, `Missing Rate`, Method,
+         `Mean Estimate`, Bias, RMSE, Coverage, `Coverage2`, `CI Width`,Time)
+
+```
+
+
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+summary_table_plot <- results_table %>%
+  mutate(
+    `Sample Size` = as.factor(`Sample Size`),
+    Method = factor(Method, 
+                    levels = c("Complete Case", "MICE", "aregImpute", "MissRanger"),
+                    labels = c("Complete Case", "MICE (m = 10)", "aregImpute (m = 20)", "MissRanger")),
+    `Missing Rate` = factor(`Missing Rate`, 
+                            levels = c(0.1, 0.25, 0.50),
+                            labels = c("10%", "25%", "50%")),
+    Mechanism = factor(Mechanism,
+                       levels = c("MCAR", "MAR", "MNAR"),
+                       labels = c("MCAR", "MAR", "MNAR"))
+  )
+
+
+missing_rates <- levels(summary_table_plot$`Missing Rate`)
+
+```
+
+```{r}
+
+# Figure 1, Bias plots acorss different sample size and scenarios
+plots <- lapply(missing_rates, function(mr) {
+  
+  plot_data <- summary_table_plot %>% 
+    filter(`Missing Rate` == mr)
+  
+  ggplot(plot_data,
+         aes(x = `Sample Size`, y = abs(Bias), group = Method, color = Method)) +
+    geom_line(size = 0.6) +
+    geom_point(size = 0.8) +
+    facet_grid(. ~ Mechanism) +
+    labs(
+      
+      x = "Sample Size", 
+      y = "Bias",
+      color = "Method"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      
+      panel.grid.major = element_line(color = "grey90"),
+      panel.grid.minor = element_blank(),
+      panel.border = element_rect(color = "grey80", fill = NA, size = 0.5),
+      strip.background = element_rect(fill = "#f7f7f7", color = "grey70"),
+      strip.text = element_text(face = "bold", size = 12),
+      legend.position = "bottom",
+      legend.title = element_text(face = "bold"),
+      legend.text = element_text(size = 12,color = "black"),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(size = 12,color = "black")
+    ) +
+    scale_color_manual(values = c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3")) +
+
+
+
+    scale_y_continuous(
+      limits = c(0, max(0.5, max(abs(plot_data$Bias), na.rm = TRUE))),  
+      breaks = seq(0, ceiling(max(abs(plot_data$Bias), na.rm = TRUE) * 1.1), by = 0.25)
+    ) +
+
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")
+})
+
+
+plots
+  
+  
+```
+
+
+
+```{r}
+
+# RMSE plots across different sample size and scenarios
+
+
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+
+rmse_plot_data <- results_table %>%
+  mutate(
+    `Sample Size` = as.factor(`Sample Size`),
+    Method = factor(Method, 
+                    levels = c("Complete Case", "MICE", "aregImpute", "MissRanger"),
+                    labels = c("Complete Case", "MICE (m = 10)", "aregImpute (m = 20)", "MissRanger")),
+    `Missing Rate` = factor(`Missing Rate`, 
+                            levels = c(0.1, 0.25, 0.50),
+                            labels = c("10%", "25%", "50%")),
+    Mechanism = factor(Mechanism,
+                       levels = c("MCAR", "MAR", "MNAR"),
+                       labels = c("MCAR", "MAR", "MNAR")),
+    SampleSize = factor(paste("n =", `Sample Size`), 
+                        levels = c("n = 300", "n = 600", "n = 1200", "n = 5000"))
+  )
+
+
+method_colors <- c(
+  "Complete Case" = "#e6550d",      
+  "MICE (m = 10)" = "#3182bd",       
+  "aregImpute (m = 20)" = "#de2d26",
+  "MissRanger" = "#31a354"          
+)
+
+
+missing_rates <- levels(rmse_plot_data$`Missing Rate`)
+
+
+plots2 <- lapply(missing_rates, function(mr) {
+
+  plot_data <- rmse_plot_data %>% 
+    filter(`Missing Rate` == mr)
+  
+
+  ggplot(plot_data,
+         aes(x = SampleSize, y = RMSE, fill = Method)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.9), width = 0.8) +
+    facet_grid(. ~ Mechanism, scale = "free_y") +
+    scale_fill_manual(values = method_colors) +
+    labs(
+      
+      x = "Sample Size",
+      y = "Root Mean Square Error (RMSE)",
+      fill = "Imputation Method"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_rect(color = "grey80", fill = NA, size = 0.5),
+      strip.background = element_rect(fill = "#f7f7f7", color = "grey70"),
+      strip.text = element_text(face = "bold", size = 11),
+      legend.position = "bottom",
+      legend.title = element_text(face = "bold"),
+      legend.text = element_text(size = 12,color = "black"),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(size = 12,color = "black"),
+      axis.text.x = element_text(angle = 0, hjust = 0.5)
+    ) +
+    
+
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")
+})
+plots2
+
+```
+
+
+
+
+
+```{r}
+
+# running time of each methods (500 times) under different scenarios
+ggplot(summary_table_plot, aes(x = Method, y = Time, fill = Method)) +
+  geom_boxplot(width = 0.4, outlier.size = 2, alpha = 0.7) +
+  stat_summary(fun = "mean", geom = "point", 
+               shape = 23, size = 3, fill = "white", color = "black") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    x = "Method",
+    y = "Runtime (minutes)"
+  ) +
+  coord_cartesian(ylim = c(0, 6)) +   
+  scale_y_continuous(breaks = seq(0, 6, by = 1)) +  
+  theme_classic(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title.x = element_text(face = "bold", size = 14),
+    axis.title.y = element_text(face = "bold", size = 14),
+    legend.position = "none"
+  )
+
+ggsave("final_runtime_boxplot.png", width = 8, height = 4, dpi = 1200)
+
+
+```
+
+
+
+
