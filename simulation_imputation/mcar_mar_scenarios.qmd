@@ -17,7 +17,6 @@ execute:
 # Data setup simulation
 ```{r}
 
-
 #Load libraries
 library(tidyverse)
 library(gtsummary)
@@ -185,20 +184,23 @@ unique(combined_data1$mcar)
 ```
 
 ```{r}
-library(Hmisc)    # for aregImpute()
-library(logistf)  # for Firth logistic regression
+# aregImpute() use Himisc
+library(Hmisc)  
+#Firth logistic regression
+library(logistf)  
 
 evaluate_model <- function(data_original, method = "mice", m = 10, true_effect = 3.9) {
   # Extract the unique dataset ID (used for later aggregation)
   this_id <- unique(data_original$data_id)
   if (length(this_id) != 1) this_id <- NA_integer_
 
-  # Prepare model-ready data: rename c_star → c, y_star → y
+  # Prepare model data, rename c_star to c, y_star to y
   data <- data_original %>%
     dplyr::select(y = y_star, c = c_star, x, z, l) %>%
+    # covert all variables as numeric for better regression fit
     mutate(across(everything(), ~ as.numeric(as.character(.))))
 
-  # Default empty result (returned if fitting fails)
+  # Default empty result 
   result_empty <- tibble(
     data_id = this_id,
     method  = method,
@@ -207,18 +209,21 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
     uci      = NA_real_    # Upper 95% CI bound
   )
 
-  # ===============================================================
-  # 1. COMPLETE-CASE ANALYSIS 
-  # ===============================================================
+
+# 1. Complete case anaysis 
+  
   if (method == "complete") {
     data_cc <- data %>%
       filter(!if_any(all_of(c("y", "x", "c")), is.na)) %>%
+      # only convert y to factor
       mutate(y = factor(y, levels = c(0, 1)))
 
     # Firth logistic regression provides bias-reduced estimates
     # and handles quasi-complete separation in small samples.
     if (nrow(data_cc) > 0 && length(unique(data_cc$y)) == 2) {
       fit <- try(logistf(y ~ x + c + z + l, data = data_cc), silent = TRUE)
+      # Use try() so that model failures (due to separation or non-convergence) 
+      # do not break the simulation loop.
       if (!inherits(fit, "try-error") && "x" %in% names(coef(fit))) {
         beta <- coef(fit)["x"]
         se   <- sqrt(vcov(fit)["x", "x"])
@@ -234,17 +239,19 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
     return(result_empty)
   }
 
-  # ===============================================================
-  # 2. MICE MULTIPLE IMPUTATION 
-  # ===============================================================
+ 
+# 2. mice (chain equation)
+
   if (method == "mice") {
+    # only convert y to factor
     data_mice <- data %>% mutate(y = factor(y, levels = c(0, 1)))
     imp_method <- mice::make.method(data_mice)
     imp <- try(mice::mice(data_mice, m = m, method = imp_method, maxit = 5,
                           seed = sample(1:500, 1), print = FALSE), silent = TRUE)
     if (inherits(imp, "try-error")) return(result_empty)
 
-    # Standard logistic regression is used here for compatibility with mice::pool()
+    # Standard logistic regression is used
+    # for compatibility with mice::pool()
     fit <- try(with(imp, glm(y ~ x + c + z + l, family = binomial())), silent = TRUE)
     if (inherits(fit, "try-error")) return(result_empty)
 
@@ -263,9 +270,9 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
     ))
   }
 
-  # ===============================================================
-  # 3. AREGIMPUTE 
-  # ===============================================================
+
+# 3. argImpute (Additive Regression, Bootstrapping, and Predictive Mean Matching)
+
   if (method == "aregImpute") {
     ai <- try(Hmisc::aregImpute(~ y + x + c + z + l, data = data,
                                 n.impute = m, nk = 3, B = 10,
@@ -309,9 +316,9 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
     ))
   }
 
-  # ===============================================================
-  # 4. MISSRANGER (Random Forest Single Imputation)
-  # ===============================================================
+ 
+# 4. missRanger (Random Forest Single Imputation)
+
   if (method == "missRanger") {
     imp_data <- data %>% mutate(across(everything(), ~ factor(as.numeric(.), levels = c(0, 1))))
     suppressWarnings({
@@ -368,7 +375,8 @@ get_m <- function(method) {
   return(1)
 }
 
-N_REPS <- 500  # number of simulated datasets per scenario
+# number of simulated datasets per scenario
+N_REPS <- 500  
 
 run_simulation_summary <- function(setting_row) {
   mechanism <- setting_row$sim_mechanism
@@ -394,7 +402,7 @@ run_simulation_summary <- function(setting_row) {
     m_val <- get_m(method)
 
     t0 <- Sys.time()
-    # Run evaluate_model() on each simulated dataset
+    # Run evaluate_model on each simulated dataset
     per_rep <- future_map_dfr(
       data_subset,
       ~ evaluate_model(
@@ -426,7 +434,7 @@ run_simulation_summary <- function(setting_row) {
       # Coverage based on model-specific CIs
       coverage1 = mean(per_rep$lci <= true_effect & per_rep$uci >= true_effect, na.rm = TRUE),
 
-      # Coverage2: empirical-SD-based interval 
+      # Coverage2, empirical-SD-based interval 
       coverage2_emp_sd = mean(
         (per_rep$estimate - 1.96 * Emp_SD) <= true_effect &
         (per_rep$estimate + 1.96 * Emp_SD) >= true_effect,

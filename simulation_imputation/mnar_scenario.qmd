@@ -206,9 +206,9 @@ glimpse(combined_data2)
 
 
 ```{r}
-
-library(Hmisc)    # for aregImpute()
-library(logistf)  # for Firth logistic regression
+# for aregImpute()
+library(Hmisc)    
+library(logistf)  
 
 
 evaluate_model <- function(data_original, method = "mice", m = 10, true_effect = 3.9) {
@@ -216,7 +216,7 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
   this_id <- unique(data_original$data_id)
   if (length(this_id) != 1) this_id <- NA_integer_
 
-  # Prepare model-ready data: rename c_star → c, y_star → y
+  # Prepare model-ready data: rename c_star to c, y_star to y
   # filter the data only inclue x y c and exclude other variables 
   # as Z and L are unobserved varables in the MNAR 
   data <- data_original %>%
@@ -232,9 +232,9 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
     uci      = NA_real_    # Upper 95% CI bound
   )
 
-  # ===============================================================
-  # 1. COMPLETE-CASE ANALYSIS 
-  # ===============================================================
+
+# 1. complete case analysis 
+
   if (method == "complete") {
     data_cc <- data %>%
       filter(!if_any(all_of(c("y", "x", "c")), is.na)) %>%
@@ -244,6 +244,7 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
     # and handles quasi-complete separation in small samples.
     if (nrow(data_cc) > 0 && length(unique(data_cc$y)) == 2) {
       fit <- try(logistf(y ~ x + c , data = data_cc), silent = TRUE)
+      # try() returns "try-error" class on failure
       if (!inherits(fit, "try-error") && "x" %in% names(coef(fit))) {
         beta <- coef(fit)["x"]
         se   <- sqrt(vcov(fit)["x", "x"])
@@ -259,9 +260,9 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
     return(result_empty)
   }
 
-  # ===============================================================
-  # 2. MICE MULTIPLE IMPUTATION (Rubin's pooling using glm)
-  # ===============================================================
+ 
+# 2. mice multiple chain equation (Rubin's pooling using glm)
+
   if (method == "mice") {
     data_mice <- data %>% mutate(y = factor(y, levels = c(0, 1)))
     imp_method <- mice::make.method(data_mice)
@@ -269,7 +270,8 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
                           seed = sample(1:500, 1), print = FALSE), silent = TRUE)
     if (inherits(imp, "try-error")) return(result_empty)
 
-    # Standard logistic regression is used here for compatibility with mice::pool()
+    # Standard logistic regression is used here 
+    # for compatibility with mice::pool()
     fit <- try(with(imp, glm(y ~ x + c, family = binomial())), silent = TRUE)
     if (inherits(fit, "try-error")) return(result_empty)
 
@@ -288,9 +290,9 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
     ))
   }
 
-  # ===============================================================
-  # 3. AREGIMPUTE (Manual Rubin pooling)
-  # ===============================================================
+
+# 3. argImpute addictive adaptation model (Manual Rubin pooling)
+
   if (method == "aregImpute") {
     ai <- try(Hmisc::aregImpute(~ y + x + c, data = data,
                                 n.impute = m, nk = 3, B = 10,
@@ -308,7 +310,7 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
       df$y <- factor(df$y, levels = c(0, 1))
       if (length(unique(df$y)) < 2) return(NULL)
 
-      # Standard glm() is used for compatibility and consistent variance estimation
+      # standard glm() is used for compatibility and consistent variance estimation
       fit <- try(glm(y ~ x + c, data = df, family = binomial()), silent = TRUE)
       if (inherits(fit, "try-error")) return(NULL)
       sm <- coef(summary(fit))
@@ -334,9 +336,9 @@ evaluate_model <- function(data_original, method = "mice", m = 10, true_effect =
     ))
   }
 
-  # ===============================================================
-  # 4. MISSRANGER (Random Forest Single Imputation)
-  # ===============================================================
+ 
+# 4. missRanger (Random Forest Single Imputation)
+ 
   if (method == "missRanger") {
     imp_data <- data %>% mutate(across(everything(), ~ factor(as.numeric(.), levels = c(0, 1))))
     suppressWarnings({
@@ -455,7 +457,7 @@ run_simulation_summary <- function(setting_row) {
       # Coverage based on model-specific CIs
       coverage1 = mean(per_rep$lci <= true_effect & per_rep$uci >= true_effect, na.rm = TRUE),
 
-      # Coverage2: empirical-SD-based interval (Li et al. definition)
+      # Coverage2, empirical-SD-based interval 
       coverage2_emp_sd = mean(
         (per_rep$estimate - 1.96 * Emp_SD) <= true_effect &
         (per_rep$estimate + 1.96 * Emp_SD) >= true_effect,
